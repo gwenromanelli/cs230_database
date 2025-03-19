@@ -33,14 +33,18 @@ class Node():
         self.router.add_api_route("/send_data", self.send_data, methods=["POST"])
         self.router.add_api_route("/snapshots", self.get_snapshots, methods=["GET"])
 
-        #database endpoints
+        #database changes endpoints
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_put, methods=["PUT"])
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_get, methods=["GET"])
+        self.router.add_api_route("/trigger_send_changes", self.send_changes_to_master, methods=["POST"])
+        self.router.add_api_route("/update_changes", self.update_changes, methods=["POST"])
 
         #election endpoints 
         self.router.add_api_route("/start_election", self.start_election, methods=["POST"])
+        self.router.add_api_route("/receive_election", self.receive_election, methods=["POST"])
+        self.router.add_api_route("/receive_vote", self.receive_vote, methods=["POST"])
+        self.router.add_api_route("/receive_master", self.receive_master, methods=["POST"])
 
-        #data changes endpoints
     
     def get_db_connection(self):
         """Create a new database connection using environment variables."""

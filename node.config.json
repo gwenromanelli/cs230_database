@@ -4,5 +4,6 @@
     "DB_USER": "postgres",
     "DB_PASSWORD": "cs230postgres",
     "DB_PORT": 5432,
+    "own_url": "http://127.0.0.1:8000",
     "NODE_ID": 1
 }

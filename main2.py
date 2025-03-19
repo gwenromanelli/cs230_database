@@ -16,8 +16,9 @@ node2 = Node(
     DB_PASSWORD=config["DB_PASSWORD"],
     DB_PORT=config.get("DB_PORT", 5432),
     NODE_ID= 2,
+    own_url="http://127.0.0.1:8001",
     local_state=config.get("local_state", {}),
-    OTHER_NODES=config.get("OTHER_NODES", [])
+    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8000", "node_id": 1}])
 )
 
 app.include_router(node2.router)

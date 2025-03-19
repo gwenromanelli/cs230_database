@@ -38,6 +38,7 @@ class Node():
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_get, methods=["GET"])
         self.router.add_api_route("/trigger_send_changes", self.send_changes_to_master, methods=["POST"])
         self.router.add_api_route("/update_changes", self.update_changes, methods=["POST"])
+        self.router.add_api_route("/local_changes", self.get_local_changes, methods=["GET"])
 
         #election endpoints 
         self.router.add_api_route("/start_election", self.start_election, methods=["POST"])
@@ -225,12 +226,13 @@ class Node():
 
     #functions for changing values 
 
-    def query_put(self, oshpd_id: int, payload: str, query: str):
+    def query_put(self, oshpd_id: int, payload: str):
         """
         This function will update the facility records and track changes to the bed occupancy
         Each time it is called, it will either increment or decrement the occupancy count
         for the hospital within self.changes
         """
+        query = "UPDATE hc_facilities SET total_number_beds = total_number_beds + %s WHERE oshpd_id = %s"
         conn = self.get_db_connection()
         cur = conn.cursor()
 
@@ -245,7 +247,7 @@ class Node():
 
             if oshpd_id not in self.changes:
                 self.changes[oshpd_id] = 0
-            self.changes[oshpd_id] += 1    
+            self.changes[oshpd_id] += int(payload)    
 
             return {"message": "Record updated successfully"}
         
@@ -257,10 +259,11 @@ class Node():
             conn.close()
         
 
-    def query_get(self, oshpd_id: int, query: str):
+    def query_get(self, oshpd_id: int):
         """
         Get a single facility's record by OSHPD_ID.
         """
+        query = "SELECT total_number_beds FROM hc_facilities WHERE oshpd_id = %s"
         conn = self.get_db_connection()
         cur = conn.cursor()
         try:
@@ -340,6 +343,9 @@ class Node():
         finally:
             cur.close()
             conn.close()
+    
+    def get_local_changes(self):
+        return {"local changes in dictionary": self.changes}
 
     #end of updating functions
 

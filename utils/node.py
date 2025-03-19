@@ -61,7 +61,7 @@ class Node():
     def send_markers(self, snapshot_id: str):
         for node_url in self.OTHER_NODES:
             try:
-                requests.post(f"{node_url}/receive_marker", json={
+                requests.post(f"{node_url['url']}/receive_marker", json={
                     "snapshot_id": snapshot_id,
                     "origin_node": self.NODE_ID
                 })

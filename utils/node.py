@@ -44,6 +44,7 @@ class Node():
         self.router.add_api_route("/receive_election", self.receive_election, methods=["POST"])
         self.router.add_api_route("/receive_vote", self.receive_vote, methods=["POST"])
         self.router.add_api_route("/receive_master", self.receive_master, methods=["POST"])
+        self.router.add_api_route("/master", self.master_node, methods=["GET"])
 
     
     def get_db_connection(self):
@@ -147,13 +148,13 @@ class Node():
         if not larger_nodes:
             #no node has a higher ID, elect itself as master node
             self.master = self.NODE_ID
-            self.send_master_message()
+            self.master_confirmation()
             print(f"[Node {self.NODE_ID}] is the elected master.")
             return {"message" : "node has been elected as master", "master": self.NODE_ID}
         else:
             for node in larger_nodes:
                 try:
-                    requests.post(f"{node['url']}/recieve_election", json={
+                    requests.post(f"{node['url']}/receive_election", json={
                         "election_id": election_id,
                         "sender_id": self.NODE_ID,
                         "sender_url": self.own_url
@@ -195,15 +196,15 @@ class Node():
     def receive_vote(self, data:dict):
         voter_id = data['voter_id']
         election_id = data['election_id']
-        print(f"[Node {self.NODE_ID}] Recieved vote from Node: {voter_id} for election id: {election_id}")
-        return {"message": "Vote recieved", "election_id": election_id}
+        print(f"[Node {self.NODE_ID}] Received vote from Node: {voter_id} for election id: {election_id}")
+        return {"message": "Vote received", "election_id": election_id}
     
     
     def master_confirmation(self):
         for node in self.OTHER_NODES:
             try:
                 requests.post(
-                    f"{node['url']}/recieve_master", 
+                    f"{node['url']}/receive_master", 
                     json = {
                         "master_id": self.master
                     }
@@ -213,8 +214,11 @@ class Node():
     
     def receive_master(self, data:dict):
         self.master = data["master_id"]
-        print(f"[Node {self.NODE_ID}] Recieved master announcement: master is Node {self.master}")
+        print(f"[Node {self.NODE_ID}] Received master announcement: master is Node {self.master}")
         return {"message": "Master announcement received", "master": self.master}
+    
+    def master_node(self):
+        return {"message": "The master node is", "master": self.master}
 
     #end of election algorithms 
 

@@ -18,7 +18,7 @@ node1 = Node(
     NODE_ID=config["NODE_ID"],
     own_url=config["own_url"],
     local_state=config.get("local_state", {}),
-    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8001", "node_id": 2}])
+    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8001", "node_id": 2}, {"url": "http://127.0.0.1:8002", "node_id": 3}])
 )
 
 app.include_router(node1.router)

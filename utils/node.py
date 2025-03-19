@@ -21,8 +21,10 @@ class Node():
         self.recorded_snapshot = set()
         self.in_transit_messages = {}
         self.master = None
+        self.changes = {}
 
         self.router = APIRouter()
+
 
         #snapshotting endpoints
         self.router.add_api_route("/", self.read_root, methods=["GET"])
@@ -34,6 +36,11 @@ class Node():
         #database endpoints
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_put, methods=["PUT"])
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_get, methods=["GET"])
+
+        #election endpoints 
+        self.router.add_api_route("/start_election", self.start_election, methods=["POST"])
+
+        #data changes endpoints
     
     def get_db_connection(self):
         """Create a new database connection using environment variables."""
@@ -122,54 +129,10 @@ class Node():
         }
     #end of snapshotting functions
 
+
     def read_root(self):
         return {"I am node %s".format(self.NODE_ID)}
 
-
-    def query_put(self, oshpd_id: int, payload: str, query: str):
-        conn = self.get_db_connection()
-        cur = conn.cursor()
-
-        try:
-            # Update query
-            update_query = query
-            cur.execute(update_query, (payload, oshpd_id))
-            conn.commit()
-
-            if cur.rowcount == 0:
-                # If rowcount = 0, no rows were updated (the OSHPD_ID might not exist)
-                raise HTTPException(status_code=404, detail="Record not found or OSHPD_ID does not exist")
-
-            return {"message": "Record updated successfully"}
-        except Exception as e:
-            conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            cur.close()
-            conn.close()
-
-    def query_get(self, oshpd_id: int, query: str):
-        """
-        Get a single facility's record by OSHPD_ID.
-        """
-        conn = self.get_db_connection()
-        cur = conn.cursor()
-        try:
-            select_query = query 
-            cur.execute(select_query, (oshpd_id,))
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Facility not found")
-
-            return {
-                row
-            }
-
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            cur.close()
-            conn.close()
 
     #election algorithm functions
     def start_election(self):
@@ -232,7 +195,7 @@ class Node():
         return {"message": "Vote recieved", "election_id": election_id}
     
     
-    def master_connfirmation(self):
+    def master_confirmation(self):
         for node in self.OTHER_NODES:
             try:
                 requests.post(
@@ -249,6 +212,130 @@ class Node():
         print(f"[Node {self.NODE_ID}] Recieved master announcement: master is Node {self.master}")
         return {"message": "Master announcement received", "master": self.master}
 
+    #end of election algorithms 
+
+
+    #functions for changing values 
+
+    def query_put(self, oshpd_id: int, payload: str, query: str):
+        """
+        This function will update the facility records and track changes to the bed occupancy
+        Each time it is called, it will either increment or decrement the occupancy count
+        for the hospital within self.changes
+        """
+        conn = self.get_db_connection()
+        cur = conn.cursor()
+
+        try:
+            cur.execute(query, (payload, oshpd_id))
+            conn.commit()
+
+            if cur.rowcount == 0:
+                # If rowcount = 0, no rows were updated (the OSHPD_ID might not exist)
+                raise HTTPException(status_code=404, detail="Record not found or OSHPD_ID does not exist")
+            
+
+            if oshpd_id not in self.changes:
+                self.changes[oshpd_id] = 0
+            self.changes[oshpd_id] += 1    
+
+            return {"message": "Record updated successfully"}
+        
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            cur.close()
+            conn.close()
+        
+
+    def query_get(self, oshpd_id: int, query: str):
+        """
+        Get a single facility's record by OSHPD_ID.
+        """
+        conn = self.get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(query, (oshpd_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Facility not found")
+
+            return {"data" : row}
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            cur.close()
+            conn.close()
+    
+    def send_changes_to_master(self):
+        if self.master is None:
+            print("There is no master elected yet. No changes sent.")
+            return {"message" : "No master."}
+        if not self.changes:
+            print("No new changes made to send.")
+            return {"message" : "No new changes."}
+        
+        master_url = None
+        for node in self.OTHER_NODES:
+            if node["node_id"] == self.master:
+                master_url = node["url"]
+                break
+                
+        if master_url is None:
+            print("Master URL not found.")
+            return {"message" : "No Master URL found."}
+        
+        try:
+            response = requests.post(
+                f"{master_url}/update_changes",
+                json = {
+                    "sender_id": self.NODE_ID,
+                    "changes": self.changes
+                }
+            )
+            print(f"Sent changes to master: {self.changes}, response: {response.text}")
+            #clear local changes
+            self.changes.clear()
+            return {"message" : "local changes sent to master and cleared."}
+        except Exception as e:
+            print(f"Failed to send changes to master: {e}")
+            return {"message": f"Failed to send changes: {e}"}
+    
+    def update_changes(self, data:dict):
+        """
+        This function on the master node will receive the changes from 
+        the other nodes. The master node can then update its global state and/or
+        database. 
+        """
+        sender_id = data["sender_id"]
+        changes = data["changes"]
+        print(f"Master Node received changes from Node {sender_id}: {changes}")
+
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+
+            for hospital_id, change in changes.items():
+                update_query = """
+                    UPDATE hc_facilities 
+                    SET total_number_beds = total_number_beds + %s
+                    WHERE oshpd_id = %s
+                """
+                cur.execute(update_query, (change, hospital_id))
+            conn.commit()
+            return {"message": "Changes received and applied", "changes":changes}
+        except Exception as e:
+            conn.rollback()
+            return {"message" : "Failed to update changes", "error":str(e)}
+        finally:
+            cur.close()
+            conn.close()
+
+    #end of updating functions
+
+ 
 """
     def send_votes(self, snapshot_id: str):
         for node_url in self.OTHER_NODES:

@@ -25,7 +25,7 @@ class Node():
         self.snapshots = {}
         self.recorded_snapshot = set()
         self.in_transit_messages = {}
-        self.master = 3
+        self.master = None
         self.changes = {}
         self.election_ip = False
 

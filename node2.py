@@ -15,7 +15,7 @@ with open(config_path, "r") as f:
 
 # Creating fastapi instance
 app = FastAPI()
-node2 = Node(config)
+node2 = Node(config, config["OTHER_NODES"])
 app.include_router(node2.router)
 
 if __name__ == "__main__":     

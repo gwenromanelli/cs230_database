@@ -10,7 +10,7 @@ stopped = False
 async def engine(node): 
     try:
         while not stopped:
-            node.snapshot_listen()
+            await node.snapshot_listen()
             await asyncio.sleep(node.refresh_rate)
 
     except Exception as e:
@@ -27,17 +27,17 @@ with open(config_path, "r") as f:
 
 
 # Creating fastapi instance
-app = FastAPI()
+node2 = FastAPI()
 node = Node(config, config["OTHER_NODES"])
-app.include_router(node.router)
+node2.include_router(node.router)
 
-@app.get("/")
+@node2.get("/")
 def main():
     return {"message": "Hello World"}
 
 async def main():
     asyncio.create_task(engine(node))
-    config = uvicorn.Config(app, host='0.0.0.0',port=8001,reload=True)
+    config = uvicorn.Config(node2, host='0.0.0.0',port=8001,reload=True)
     server = uvicorn.Server(config)
     await server.serve()
     stopped = True

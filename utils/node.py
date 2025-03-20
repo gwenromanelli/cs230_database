@@ -127,7 +127,7 @@ class Node():
 
         if snapshot_id not in self.recorded_snapshot:
             self.record_local_snapshot(snapshot_id)
-            self.send_markers(snapshot_id)
+            #self.send_markers(snapshot_id)
         else:
             pass
 

@@ -21,7 +21,7 @@ def run():
 
 
 # Getting config for node on this instance
-config_path = os.path.join(os.path.dirname(__file__), "node2.config.json")
+config_path = os.path.join(os.path.dirname(__file__), "node.config.json")
 with open(config_path, "r") as f:
     config = json.load(f)
 
@@ -37,7 +37,7 @@ def main():
 
 async def main():
     asyncio.create_task(engine(node))
-    config = uvicorn.Config("node2:app", host='0.0.0.0',port=8001,reload=True)
+    config = uvicorn.Config("node1:app", host='0.0.0.0',port=8000,reload=True)
     server = uvicorn.Server(config)
     await server.serve()
     stopped = True
@@ -45,4 +45,3 @@ async def main():
 
 if __name__ == "__main__":     
     asyncio.run(main())
-

@@ -529,7 +529,7 @@ class Node():
             try:
                 requests.post(f"{node_url}/receive_marker", json={
                     "snapshot_id": snapshot_id,
-                    "origin_node": self.NODE_ID
+                    "origin_node": self.NODE_ID                                                                                                                                                                                                         
                 })
 
             except Exception as e:

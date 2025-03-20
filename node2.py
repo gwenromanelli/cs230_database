@@ -2,6 +2,7 @@ import os
 import json
 from fastapi import FastAPI
 from utils.node import Node
+import time
 
 app = FastAPI()
 
@@ -10,7 +11,7 @@ with open(config_path, "r") as f:
     config = json.load(f)
 
 node2 = Node(
-    DB_HOST="county-instance-2.c70eoas2ow9v.us-east-2.rds.amazonaws.com",
+    DB_HOST=config["DB_HOST"],
     DB_NAME=config["DB_NAME"],
     DB_USER=config["DB_USER"],
     DB_PASSWORD=config["DB_PASSWORD"],
@@ -18,7 +19,7 @@ node2 = Node(
     NODE_ID= 2,
     own_url="http://127.0.0.1:8001",
     local_state=config.get("local_state", {}),
-    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8000", "node_id": 1}, {"url": "http://127.0.0.1:8002", "node_id": 3}])
+    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8001", "node_id": 1}])
 )
 
 app.include_router(node2.router)

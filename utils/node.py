@@ -6,6 +6,7 @@ import json
 from fastapi import FastAPI, HTTPException, Request, APIRouter
 from pydantic import BaseModel
 import time
+import asyncio
 
 class Node():
     def __init__(self, config, OTHER_NODES = []):
@@ -24,8 +25,9 @@ class Node():
         self.snapshots = {}
         self.recorded_snapshot = set()
         self.in_transit_messages = {}
-        self.master = None
+        self.master = 3
         self.changes = {}
+        self.election_ip = False
 
         self.router = APIRouter()
 
@@ -41,7 +43,7 @@ class Node():
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_put, methods=["PUT"])
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_get, methods=["GET"])
         self.router.add_api_route("/trigger_send_changes", self.send_changes_to_master, methods=["POST"])
-        self.router.add_api_route("/update_changes", self.update_changes, methods=["POST"])
+        #self.router.add_api_route("/update_changes", self.update_changes, methods=["PUT"])
         self.router.add_api_route("/local_changes", self.get_local_changes, methods=["GET"])
 
         #election endpoints 
@@ -103,12 +105,20 @@ class Node():
             "in_transit": []
         }
         self.in_transit_messages[snapshot_id] = []
-        #print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
+        print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
 
     def start_snapshot(self):
         snapshot_id = str(uuid.uuid4())
         self.record_local_snapshot(snapshot_id)
         self.send_markers(snapshot_id)
+        return {"status": "started_snapshot", "snapshot_id": snapshot_id}
+    
+    async def async_start_snapshot(self):
+        loop = asyncio.get_event_loop()
+        snapshot_id = str(uuid.uuid4())
+        # Run the blocking snapshot functions in a thread pool executor:
+        await loop.run_in_executor(None, self.record_local_snapshot, snapshot_id)
+        await loop.run_in_executor(None, self.send_markers, snapshot_id)
         return {"status": "started_snapshot", "snapshot_id": snapshot_id}
 
     def receive_marker(self,data: dict):
@@ -147,10 +157,19 @@ class Node():
         return {"I am node %s".format(self.NODE_ID)}
 
 
-    #election algorithm functions
+    #election algorithm 
     def start_election(self):
+        if self.master is not None:
+            print(f"[Node {self.NODE_ID}] Master already elected: Node {self.master}. No election needed.")
+            return {"message": "Master already elected", "master": self.master}
+        
+        if self.election_ip:
+            print(f"[Node {self.NODE_ID}] Election already in progress; skipping new election.")
+            return {"message": "Election already in progress", "master": self.master}
+        
+        self.election_ip = True
         election_id = str(uuid.uuid4())
-        self.master = None
+        #self.master = None
 
         larger_nodes = [node for node in self.OTHER_NODES if node["node_id"] > self.NODE_ID]
         if not larger_nodes:
@@ -158,6 +177,7 @@ class Node():
             self.master = self.NODE_ID
             self.master_confirmation()
             print(f"[Node {self.NODE_ID}] is the elected master.")
+            self.election_ip = False
             return {"message" : "node has been elected as master", "master": self.NODE_ID}
         else:
             for node in larger_nodes:
@@ -230,6 +250,14 @@ class Node():
     
     def is_master(self):
         return self.master == self.NODE_ID
+    
+    async def election_timeout(self, election_id, timeout=10):
+        await asyncio.sleep(timeout)
+        # Check if the master is still not set and election is in progress
+        if self.election_ip and self.master is None:
+            print(f"[Node {self.NODE_ID}] Election timeout reached for election {election_id}. Retrying election...")
+            self.election_ip = False  # Clear flag to allow a new election
+            self.start_election()
 
     #end of election algorithms 
 
@@ -244,15 +272,49 @@ class Node():
 
         if self.is_master():
             print("I am the master node {} \nSnapshotting...".format(self.NODE_ID))
-            self.start_snapshot()
+            asyncio.create_task(self.async_start_snapshot())
 
         else:
             print("I am not the master node \nlistening...")
+            asyncio.create_task(self.async_start_snapshot())
     
+    def compute_occupancy_level(self, total_beds: int, available_beds: int) -> int:
+        """
+        Computes an occupancy level from 1 to 5 based on the ratio of occupied beds.
+        """
+        if total_beds == 0:
+            return 1  
 
+        ratio = 1 - (available_beds / total_beds)
+        
+        if ratio < 0.20:
+            return 1
+        elif ratio < 0.40:
+            return 2
+        elif ratio < 0.60:
+            return 3
+        elif ratio < 0.80:
+            return 4
+        else:
+            return 5
+        
     def snapshot_heuristic(self):
-        #TODO: Implement a heuristic to determine the snapshot frequency from 30 to 300 seconds
-        return 0
+        # Example functions that you would implement to fetch these values:
+        total_beds = self.get_total_beds()         # Aggregate total from your DB.
+        available_beds = self.get_available_beds()   # Aggregate available from your DB. 
+        
+        danger_dict = self.get_danger_level()       # Retrieve danger level from the DB.
+        danger_level = danger_dict["danger_level"]
+        occupancy_level = self.compute_occupancy_level(total_beds, available_beds)
+        #recommended_interval = get_snapshot_interval(occupancy_level, danger_level)
+        reccomended_interval = danger_level + occupancy_level
+        
+        '''
+        print(f"Computed occupancy ratio: {1 - (available_beds / total_beds):.2f} -> Level {occupancy_level}, "
+            f"Danger Level: {danger_level}. "
+            f"Recommended snapshot interval: {self.refresh_rates[reccomended_interval]} seconds.")
+        '''
+        return reccomended_interval
 
 
 
@@ -264,7 +326,7 @@ class Node():
         Each time it is called, it will either increment or decrement the occupancy count
         for the hospital within self.changes
         """
-        query = "UPDATE hc_facilities SET total_number_beds = total_number_beds + %s WHERE oshpd_id = %s"
+        query = "UPDATE hc_facilities SET available_number_beds = available_number_beds - %s WHERE oshpd_id = %s"
         conn = self.get_db_connection()
         cur = conn.cursor()
 
@@ -295,7 +357,7 @@ class Node():
         """
         Get a single facility's record by OSHPD_ID.
         """
-        query = "SELECT total_number_beds FROM hc_facilities WHERE oshpd_id = %s"
+        query = "SELECT available_number_beds FROM hc_facilities WHERE oshpd_id = %s"
         conn = self.get_db_connection()
         cur = conn.cursor()
         try:
@@ -363,7 +425,7 @@ class Node():
             for hospital_id, change in changes.items():
                 update_query = """
                     UPDATE hc_facilities 
-                    SET total_number_beds = total_number_beds + %s
+                    SET available_number_beds = available_number_beds - %s
                     WHERE oshpd_id = %s
                 """
                 cur.execute(update_query, (change, hospital_id))
@@ -380,6 +442,85 @@ class Node():
         return {"local changes in dictionary": self.changes}
 
     #end of updating functions
+
+    def get_danger_level(self) -> dict:
+        """
+        Retrieves the single danger level value from the danger_level table.
+        Assumes the table has only one row with one column named "level".
+        """
+        query = "SELECT level FROM danger_level LIMIT 1;"
+        conn = self.get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(query)
+            result = cur.fetchone()
+            if result is None:
+                raise HTTPException(status_code=404, detail="Danger level not found")
+            # result[0] contains the danger level value
+            return {"danger_level": result[0]}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            cur.close()
+            conn.close()
+        #end of updating functions
+
+    def update_danger_level(self, new_level: int) -> int:
+        """
+        Updates the single danger level value in the danger_level table.
+        """
+        query = "UPDATE danger_level SET level = %s;"
+        conn = self.get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(query, (new_level,))
+            conn.commit()
+            return {"message": "Danger level updated successfully", "new_level": new_level}
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            cur.close()
+            conn.close()
+
+    def get_total_beds(self) -> int:
+        """
+        Retrieves the sum of all beds from the 'total_number_beds' column in the 'hc_facilities' table.
+        Null values are ignored. Returns 0 if no valid entries are found.
+        """
+        total_beds = 0
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+            # SUM automatically ignores null values, but COALESCE ensures a 0 is returned if the sum is NULL.
+            cur.execute("SELECT COALESCE(SUM(total_number_beds), 0) FROM hc_facilities WHERE total_number_beds IS NOT NULL")
+            result = cur.fetchone()
+            total_beds = int(result[0]) if result and result[0] is not None else 0
+        except Exception as e:
+            print(f"Error fetching total beds: {e}")
+        finally:
+            cur.close()
+            conn.close()
+        return total_beds
+
+    def get_available_beds(self) -> int:
+        """
+        Retrieves the sum of available beds from the 'available_number_beds' column in the 'hc_facilities' table.
+        Null values are ignored. Returns 0 if no valid entries are found.
+        """
+        available_beds = 0
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT COALESCE(SUM(available_number_beds), 0) FROM hc_facilities WHERE available_number_beds IS NOT NULL")
+            result = cur.fetchone()
+            available_beds = int(result[0]) if result and result[0] is not None else 0
+        except Exception as e:
+            print(f"Error fetching available beds: {e}")
+        finally:
+            cur.close()
+            conn.close()
+        return available_beds
 
  
 """

@@ -25,9 +25,9 @@ class Node():
         self.snapshots = {}
         self.recorded_snapshot = set()
         self.in_transit_messages = {}
-        self.master = None
+        self.master = 3
         self.changes = {}
-        self.election_ip = False
+        self.timeout_duration = 15 #seconds
 
         self.router = APIRouter()
 
@@ -43,7 +43,7 @@ class Node():
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_put, methods=["PUT"])
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_get, methods=["GET"])
         self.router.add_api_route("/trigger_send_changes", self.send_changes_to_master, methods=["POST"])
-        #self.router.add_api_route("/update_changes", self.update_changes, methods=["PUT"])
+        self.router.add_api_route("/update_changes", self.update_changes, methods=["POST"])
         self.router.add_api_route("/local_changes", self.get_local_changes, methods=["GET"])
 
         #election endpoints 
@@ -55,7 +55,7 @@ class Node():
 
         #snapshot heuristic
         #TODO: change back to 30 seconds
-        self.refresh_rates = [10*i for i in range(1,11)] # 30 seconds to 5 minutes
+        self.refresh_rates = [20*i for i in range(1,11)] # 30 seconds to 5 minutes
     
     def get_db_connection(self):
         """Create a new database connection using environment variables."""
@@ -64,17 +64,19 @@ class Node():
             database=self.DB_NAME,
             user=self.DB_USER,
             password=self.DB_PASSWORD,
-            port=self.DB_PORT
+            port=self.DB_PORT,
+            connect_timeout=self.timeout_duration
         )
     
     #start of snapshotting functions
-    def send_markers(self, snapshot_id: str):
+    async def send_markers(self, snapshot_id: str):
         for node_url in self.OTHER_NODES:
+            print("debug 1: {}".format(node_url))
             try:
-                requests.post(f"{node_url['url']}/receive_marker", json={
+                await asyncio.wait_for(self.post_node(f"{node_url['url']}/receive_marker", json={
                     "snapshot_id": snapshot_id,
                     "origin_node": self.NODE_ID
-                })
+                }),timeout=self.timeout_duration)
 
             except Exception as e:
                 print(f"Failed to send marker to {node_url}: {e}")
@@ -107,27 +109,19 @@ class Node():
         self.in_transit_messages[snapshot_id] = []
         print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
 
-    def start_snapshot(self):
+    async def start_snapshot(self):
         snapshot_id = str(uuid.uuid4())
         self.record_local_snapshot(snapshot_id)
-        self.send_markers(snapshot_id)
-        return {"status": "started_snapshot", "snapshot_id": snapshot_id}
-    
-    async def async_start_snapshot(self):
-        loop = asyncio.get_event_loop()
-        snapshot_id = str(uuid.uuid4())
-        # Run the blocking snapshot functions in a thread pool executor:
-        await loop.run_in_executor(None, self.record_local_snapshot, snapshot_id)
-        await loop.run_in_executor(None, self.send_markers, snapshot_id)
+        await self.send_markers(snapshot_id)
         return {"status": "started_snapshot", "snapshot_id": snapshot_id}
 
-    def receive_marker(self,data: dict):
+    async def receive_marker(self,data: dict):
         snapshot_id = data["snapshot_id"]
         origin_node = data["origin_node"]
 
         if snapshot_id not in self.recorded_snapshot:
             self.record_local_snapshot(snapshot_id)
-            self.send_markers(snapshot_id)
+            #await self.send_markers(snapshot_id)
         else:
             pass
 
@@ -155,44 +149,40 @@ class Node():
 
     def read_root(self):
         return {"I am node %s".format(self.NODE_ID)}
+    
+    async def post_node(self,*args, **kwargs):
+        return requests.post(*args, **kwargs)
 
 
-    #election algorithm 
-    def start_election(self):
-        if self.master is not None:
-            print(f"[Node {self.NODE_ID}] Master already elected: Node {self.master}. No election needed.")
-            return {"message": "Master already elected", "master": self.master}
-        
-        if self.election_ip:
-            print(f"[Node {self.NODE_ID}] Election already in progress; skipping new election.")
-            return {"message": "Election already in progress", "master": self.master}
-        
-        self.election_ip = True
+    #election algorithm functions
+    async def start_election(self):
         election_id = str(uuid.uuid4())
-        #self.master = None
+        self.master = None
 
         larger_nodes = [node for node in self.OTHER_NODES if node["node_id"] > self.NODE_ID]
         if not larger_nodes:
             #no node has a higher ID, elect itself as master node
             self.master = self.NODE_ID
-            self.master_confirmation()
+            try:
+                await asyncio.wait_for(self.master_confirmation(),timout=self.timeout_duration)
+            except Exception as e:
+                print(f"Failed to send master confirmation: {e}")
             print(f"[Node {self.NODE_ID}] is the elected master.")
-            self.election_ip = False
             return {"message" : "node has been elected as master", "master": self.NODE_ID}
         else:
             for node in larger_nodes:
                 try:
-                    requests.post(f"{node['url']}/receive_election", json={
+                    await asyncio.wait_for(self.post_node(f"{node['url']}/receive_election", json={
                         "election_id": election_id,
                         "sender_id": self.NODE_ID,
                         "sender_url": self.own_url
-                    })
+                    },timeout=self.timeout_duration),timeout=self.timeout_duration)
                 except Exception as e:
                     print(f"Failed to send election message to {node['url']}: {e}")
             print(f"[Node {self.NODE_ID}] Election started, waiting for votes.")
             return {"message": "Election started, waiting for votes", "election_id": election_id}
     
-    def receive_election(self, data:dict):
+    async def receive_election(self, data:dict):
         sender_id = data["sender_id"]
         election_id = data["election_id"]
         sender_url = data.get("sender_url")
@@ -202,20 +192,20 @@ class Node():
         if self.NODE_ID > sender_id:
             if sender_url:
                 try:
-                    response = requests.post(
+                    response = await asyncio.wait_for(self.post_node(
                         f"{sender_url}/receive_vote",
                         json = {
                             "election_id": election_id,
                             "voter_id": self.NODE_ID
                         }
-                    )
+                    ),timeout=self.timeout_duration)
                     print(f"[Node {self.NODE_ID}] Sent vote to Node {sender_id}, response: {response.text}")
                 except Exception as e:
                     print(f"[Node {self.NODE_ID}] Failed to send vote to {sender_url}: {e}")
             else:
                 print(f"[Node {self.NODE_ID}] No sender URL; can't send vote to Node {sender_id}")
             
-            self.start_election() #start election since self.NODE_ID is larger
+            await self.start_election() #start election since self.NODE_ID is larger
         else:
             print(f"[Node {self.NODE_ID}] Not sending vote as my node id is lower than {sender_id}")
         return {"message": "Election message received", "election_id": election_id}
@@ -228,15 +218,15 @@ class Node():
         return {"message": "Vote received", "election_id": election_id}
     
     
-    def master_confirmation(self):
+    async def master_confirmation(self):
         for node in self.OTHER_NODES:
             try:
-                requests.post(
+                await asyncio.wait_for(self.post_node(
                     f"{node['url']}/receive_master", 
                     json = {
                         "master_id": self.master
                     }
-                )
+                ),timeout=self.timeout_duration)
             except Exception as e:
                 print(f"Failed to send master annoucnemennt to {node['url']}: {e}")
     
@@ -250,71 +240,29 @@ class Node():
     
     def is_master(self):
         return self.master == self.NODE_ID
-    
-    async def election_timeout(self, election_id, timeout=10):
-        await asyncio.sleep(timeout)
-        # Check if the master is still not set and election is in progress
-        if self.election_ip and self.master is None:
-            print(f"[Node {self.NODE_ID}] Election timeout reached for election {election_id}. Retrying election...")
-            self.election_ip = False  # Clear flag to allow a new election
-            self.start_election()
 
     #end of election algorithms 
 
-    def snapshot_listen(self):
+    async def snapshot_listen(self):
         #Checking the refresh rate for listening
         self.refresh_rate = self.refresh_rates[self.snapshot_heuristic()]
         print("DEBUG: master node is {} at node {}".format(self.master,self.NODE_ID))
 
         if self.master == None:
-            print("No master node, starting election")
-            self.start_election()
+            print("No master node, waiting for election...")
+            await self.start_election()
 
-        if self.is_master():
+        elif self.is_master():
             print("I am the master node {} \nSnapshotting...".format(self.NODE_ID))
-            asyncio.create_task(self.async_start_snapshot())
+            await self.start_snapshot()
 
         else:
             print("I am not the master node \nlistening...")
-            asyncio.create_task(self.async_start_snapshot())
     
-    def compute_occupancy_level(self, total_beds: int, available_beds: int) -> int:
-        """
-        Computes an occupancy level from 1 to 5 based on the ratio of occupied beds.
-        """
-        if total_beds == 0:
-            return 1  
 
-        ratio = 1 - (available_beds / total_beds)
-        
-        if ratio < 0.20:
-            return 1
-        elif ratio < 0.40:
-            return 2
-        elif ratio < 0.60:
-            return 3
-        elif ratio < 0.80:
-            return 4
-        else:
-            return 5
-        
     def snapshot_heuristic(self):
-        # Example functions that you would implement to fetch these values:
-        total_beds = self.get_total_beds()         # Aggregate total from your DB.
-        available_beds = self.get_available_beds()   # Aggregate available from your DB. 
-        
-        danger_dict = self.get_danger_level()       # Retrieve danger level from the DB.
-        danger_level = danger_dict["danger_level"]
-        occupancy_level = self.compute_occupancy_level(total_beds, available_beds)
-        #recommended_interval = get_snapshot_interval(occupancy_level, danger_level)
-        reccomended_interval = danger_level + occupancy_level
-        
-        '''
-        print(f"Computed occupancy ratio: {1 - (available_beds / total_beds):.2f} -> Level {occupancy_level}, "
-            f"Danger Level: {danger_level}. "
-            f"Recommended snapshot interval: {self.refresh_rates[reccomended_interval]} seconds.")
-        '''
-        return reccomended_interval
+        #TODO: Implement a heuristic to determine the snapshot frequency from 30 to 300 seconds
+        return 0
 
 
 
@@ -393,14 +341,14 @@ class Node():
             return {"message" : "No Master URL found."}
         
         try:
-            response = requests.post(
+            response = asyncio.wait_for(self.post_node(
                 f"{master_url}/update_changes",
                 json = {
                     "sender_id": self.NODE_ID,
                     "changes": self.changes
                 }
-            )
-            print(f"Sent changes to master: {self.changes}, response: {response.text}")
+            ),timeout=self.timeout_duration)
+            print(f"Sent changes to master: {self.changes}")
             #clear local changes
             self.changes.clear()
             return {"message" : "local changes sent to master and cleared."}
@@ -443,85 +391,6 @@ class Node():
 
     #end of updating functions
 
-    def get_danger_level(self) -> dict:
-        """
-        Retrieves the single danger level value from the danger_level table.
-        Assumes the table has only one row with one column named "level".
-        """
-        query = "SELECT level FROM danger_level LIMIT 1;"
-        conn = self.get_db_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(query)
-            result = cur.fetchone()
-            if result is None:
-                raise HTTPException(status_code=404, detail="Danger level not found")
-            # result[0] contains the danger level value
-            return {"danger_level": result[0]}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            cur.close()
-            conn.close()
-        #end of updating functions
-
-    def update_danger_level(self, new_level: int) -> int:
-        """
-        Updates the single danger level value in the danger_level table.
-        """
-        query = "UPDATE danger_level SET level = %s;"
-        conn = self.get_db_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(query, (new_level,))
-            conn.commit()
-            return {"message": "Danger level updated successfully", "new_level": new_level}
-        except Exception as e:
-            conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            cur.close()
-            conn.close()
-
-    def get_total_beds(self) -> int:
-        """
-        Retrieves the sum of all beds from the 'total_number_beds' column in the 'hc_facilities' table.
-        Null values are ignored. Returns 0 if no valid entries are found.
-        """
-        total_beds = 0
-        try:
-            conn = self.get_db_connection()
-            cur = conn.cursor()
-            # SUM automatically ignores null values, but COALESCE ensures a 0 is returned if the sum is NULL.
-            cur.execute("SELECT COALESCE(SUM(total_number_beds), 0) FROM hc_facilities WHERE total_number_beds IS NOT NULL")
-            result = cur.fetchone()
-            total_beds = int(result[0]) if result and result[0] is not None else 0
-        except Exception as e:
-            print(f"Error fetching total beds: {e}")
-        finally:
-            cur.close()
-            conn.close()
-        return total_beds
-
-    def get_available_beds(self) -> int:
-        """
-        Retrieves the sum of available beds from the 'available_number_beds' column in the 'hc_facilities' table.
-        Null values are ignored. Returns 0 if no valid entries are found.
-        """
-        available_beds = 0
-        try:
-            conn = self.get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT COALESCE(SUM(available_number_beds), 0) FROM hc_facilities WHERE available_number_beds IS NOT NULL")
-            result = cur.fetchone()
-            available_beds = int(result[0]) if result and result[0] is not None else 0
-        except Exception as e:
-            print(f"Error fetching available beds: {e}")
-        finally:
-            cur.close()
-            conn.close()
-        return available_beds
-
  
 """
     def send_votes(self, snapshot_id: str):
@@ -529,7 +398,7 @@ class Node():
             try:
                 requests.post(f"{node_url}/receive_marker", json={
                     "snapshot_id": snapshot_id,
-                    "origin_node": self.NODE_ID                                                                                                                                                                                                         
+                    "origin_node": self.NODE_ID
                 })
 
             except Exception as e:

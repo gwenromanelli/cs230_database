@@ -2,24 +2,26 @@ import os
 import json
 from fastapi import FastAPI
 from utils.node import Node
+from utils.engine import NodeEngine
 import time
+import threading
+import uvicorn
 
-app = FastAPI()
+# Getting config for node on this instance
 
-config_path = os.path.join(os.path.dirname(__file__), "node.config.json")
+config_path = os.path.join(os.path.dirname(__file__), "node2.config.json")
 with open(config_path, "r") as f:
     config = json.load(f)
 
-node2 = Node(
-    DB_HOST=config["DB_HOST"],
-    DB_NAME=config["DB_NAME"],
-    DB_USER=config["DB_USER"],
-    DB_PASSWORD=config["DB_PASSWORD"],
-    DB_PORT=config.get("DB_PORT", 5432),
-    NODE_ID= 2,
-    own_url="http://127.0.0.1:8001",
-    local_state=config.get("local_state", {}),
-    OTHER_NODES=config.get("OTHER_NODES", [{"url": "http://127.0.0.1:8001", "node_id": 1}])
-)
-
+# Creating fastapi instance
+app = FastAPI()
+node2 = Node(config)
 app.include_router(node2.router)
+
+if __name__ == "__main__":     
+    node_engine = NodeEngine(node2)
+    node_engine.start()
+    #Main node
+    uvicorn.run("main:app", host='0.0.0.0', port=8001, reload=True)
+    
+    node_engine.stopped = True

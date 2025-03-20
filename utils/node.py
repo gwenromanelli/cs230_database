@@ -5,18 +5,22 @@ import uuid
 import json
 from fastapi import FastAPI, HTTPException, Request, APIRouter
 from pydantic import BaseModel
+import time
 
 class Node():
-    def __init__(self, DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT, NODE_ID, own_url, local_state, OTHER_NODES = []):
-        self.DB_HOST = DB_HOST
-        self.DB_NAME = DB_NAME
-        self.DB_USER = DB_USER
-        self.DB_PASSWORD = DB_PASSWORD
-        self.DB_PORT = DB_PORT
+    def __init__(self, config, OTHER_NODES = []):
+        #From config
+        self.DB_HOST = config["DB_HOST"]
+        self.DB_NAME = config["DB_NAME"]
+        self.DB_USER = config["DB_USER"]
+        self.DB_PASSWORD = config["DB_PASSWORD"]
+        self.DB_PORT = config["DB_PORT"]
+        self.NODE_ID = config["NODE_ID"]
+        self.own_url = config["own_url"]
+
+        #Defaults
         self.OTHER_NODES = OTHER_NODES
-        self.NODE_ID = NODE_ID
-        self.own_url = own_url
-        self.local_state = local_state
+        self.local_state = {}
         self.snapshots = {}
         self.recorded_snapshot = set()
         self.in_transit_messages = {}
@@ -47,6 +51,9 @@ class Node():
         self.router.add_api_route("/receive_master", self.receive_master, methods=["POST"])
         self.router.add_api_route("/master", self.master_node, methods=["GET"])
 
+        #snapshot heuristic
+        #TODO: change back to 30 seconds
+        self.refresh_rates = [10*i for i in range(1,11)] # 30 seconds to 5 minutes
     
     def get_db_connection(self):
         """Create a new database connection using environment variables."""
@@ -220,8 +227,32 @@ class Node():
     
     def master_node(self):
         return {"message": "The master node is", "master": self.master}
+    
+    def is_master(self):
+        return self.master == self.NODE_ID
 
     #end of election algorithms 
+
+    def snapshot_listen(self):
+        #Checking the refresh rate for listening
+        self.refresh_rate = self.refresh_rates[self.snapshot_heuristic()]
+
+        if self.master == None:
+            print("No master node, starting election")
+            self.start_election()
+
+        if self.is_master():
+            print("I am the master node {self.node.NODE_ID} \nSnapshotting...")
+            self.start_snapshot()
+
+        else:
+            print("I am not the master node \nlistening...")
+    
+
+    def snapshot_heuristic(self):
+        #TODO: Implement a heuristic to determine the snapshot frequency from 30 to 300 seconds
+        return 0
+
 
 
     #functions for changing values 
@@ -259,7 +290,7 @@ class Node():
             conn.close()
         
 
-    def query_get(self, oshpd_id: int):
+    def query_get(self, oshpd_id: int) -> dict:
         """
         Get a single facility's record by OSHPD_ID.
         """

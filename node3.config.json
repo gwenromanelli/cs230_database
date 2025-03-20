@@ -4,17 +4,17 @@
     "DB_USER": "postgres",
     "DB_PASSWORD": "cs230postgres",
     "DB_PORT": 5432,
-    "own_url": "http://127.0.0.1:8000",
+    "own_url": "http://127.0.0.1:8002",
     "NODE_ID": 1,
     "LOCAL_STATE": {},
     "OTHER_NODES": [
         {
-            "url": "http://127.0.1:8001",
-            "node_id": 2
+            "url": "http://127.0.1:8000",
+            "node_id": 1
         },
         {
-            "url": "http://127.0.1:8002",
-            "node_id": 3
+            "url": "http://127.0.1:8001",
+            "node_id": 2
         }
     ]
 }

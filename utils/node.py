@@ -103,7 +103,7 @@ class Node():
             "in_transit": []
         }
         self.in_transit_messages[snapshot_id] = []
-        print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
+        #print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
 
     def start_snapshot(self):
         snapshot_id = str(uuid.uuid4())
@@ -236,13 +236,14 @@ class Node():
     def snapshot_listen(self):
         #Checking the refresh rate for listening
         self.refresh_rate = self.refresh_rates[self.snapshot_heuristic()]
+        print("DEBUG: master node is {} at node {}".format(self.master,self.NODE_ID))
 
         if self.master == None:
             print("No master node, starting election")
             self.start_election()
 
         if self.is_master():
-            print("I am the master node {self.node.NODE_ID} \nSnapshotting...")
+            print("I am the master node {} \nSnapshotting...".format(self.NODE_ID))
             self.start_snapshot()
 
         else:

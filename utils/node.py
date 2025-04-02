@@ -28,6 +28,7 @@ class Node():
         self.master = 3
         self.changes = {}
         self.timeout_duration = 15 #seconds
+        self.children_states = {}
 
         self.router = APIRouter()
 
@@ -38,6 +39,7 @@ class Node():
         self.router.add_api_route("/receive_marker", self.receive_marker, methods=["POST"])
         self.router.add_api_route("/send_data", self.send_data, methods=["POST"])
         self.router.add_api_route("/snapshots", self.get_snapshots, methods=["GET"])
+        self.router.add_api_route("/receive_states", self.master_receive_states, methods=["POST"])
 
         #database changes endpoints
         self.router.add_api_route("/hc_facilities/{oshpd_id}/", self.query_put, methods=["PUT"])
@@ -68,10 +70,26 @@ class Node():
             connect_timeout=self.timeout_duration
         )
     
-    #start of snapshotting functions
+    
+    '''
+    Snapshotting functions
+    '''
+    async def start_snapshot(self):
+        #Only the master node starts a snapshot
+        if not self.is_master():
+            return {"status": "not_master", "message": "Only the master node can start a snapshot."}
+        else:
+            snapshot_id = str(uuid.uuid4())
+            #Move the aggregate to another function after getting stuff from children
+            #self.record_local_snapshot(snapshot_id)
+        try:
+            await self.send_markers(snapshot_id)
+        except Exception as e:
+            print(f"Failed to send markers: {e}")
+        return {"status": "started_snapshot", "snapshot_id": snapshot_id}
+    
     async def send_markers(self, snapshot_id: str):
         for node_url in self.OTHER_NODES:
-            print("debug 1: {}".format(node_url))
             try:
                 await asyncio.wait_for(self.post_node(f"{node_url['url']}/receive_marker", json={
                     "snapshot_id": snapshot_id,
@@ -80,6 +98,59 @@ class Node():
 
             except Exception as e:
                 print(f"Failed to send marker to {node_url}: {e}")
+                print(f"Aborting snapshot...")
+        #TODO: Aggregate here
+
+    async def master_receive_states(self, snapshot_id: str):
+        if snapshot_id in self.snapshots:
+            print(f"Received state for snapshot {snapshot_id} from another node.")
+            return {"message": "State already recorded."}
+        
+        # Record the state received from another node
+        self.recorded_snapshot.add(snapshot_id)
+        self.children_states[snapshot_id] = self.snapshots[snapshot_id]
+
+    async def send_state_to_master(self, snapshot_id: str, snapshot):
+        if self.master is None:
+            print("There is no master elected yet. No state sent.")
+            return {"message" : "No master."}
+        
+        master_url = None
+        for node in self.OTHER_NODES:
+            if node["node_id"] == self.master:
+                master_url = node["url"]
+                break
+                
+        if master_url is None:
+            print("Master URL not found.")
+            return {"message" : "No Master URL found."}
+        
+        try:
+            response = await asyncio.wait_for(self.post_node(
+                f"{master_url}/receive_states",
+                json = {
+                    "snapshot_id": snapshot_id,
+                    "snapshot": snapshot
+                }
+            ),timeout=self.timeout_duration)
+            print(f"Sent state to master for snapshot {snapshot_id}.")
+            return {"message" : "State sent to master."}
+        except Exception as e:
+            print(f"Failed to send state to master: {e}")
+            return {"message": f"Failed to send state: {e}"}
+
+    async def receive_marker(self,data: dict):
+        snapshot_id = data["snapshot_id"]
+        origin_node = data["origin_node"]
+
+        if snapshot_id not in self.recorded_snapshot:
+            snapshot = self.record_local_snapshot(snapshot_id)
+            self.send_state_to_master(snapshot_id,snapshot)
+            #await self.send_markers(snapshot_id)
+        else:
+            pass
+
+        return {"status": "OK", "snapshot_id": snapshot_id}
 
     def record_local_snapshot(self, snapshot_id: str):
         try:
@@ -108,24 +179,8 @@ class Node():
         }
         self.in_transit_messages[snapshot_id] = []
         print(f"[{self.NODE_ID}] Recorded local snapshot {snapshot_id}: {self.snapshots[snapshot_id]}")
+        return self.snapshots[snapshot_id]
 
-    async def start_snapshot(self):
-        snapshot_id = str(uuid.uuid4())
-        self.record_local_snapshot(snapshot_id)
-        await self.send_markers(snapshot_id)
-        return {"status": "started_snapshot", "snapshot_id": snapshot_id}
-
-    async def receive_marker(self,data: dict):
-        snapshot_id = data["snapshot_id"]
-        origin_node = data["origin_node"]
-
-        if snapshot_id not in self.recorded_snapshot:
-            self.record_local_snapshot(snapshot_id)
-            #await self.send_markers(snapshot_id)
-        else:
-            pass
-
-        return {"status": "OK", "snapshot_id": snapshot_id}
 
     def send_data(self, data: dict, request: Request):
         message = {
